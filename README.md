@@ -1,0 +1,1 @@
+# js-ts-quality-checker-kit
