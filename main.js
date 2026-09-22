@@ -7,6 +7,7 @@
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { configureAgentSkills } from "./src/agent-skills.js";
 import { configureBiome } from "./src/biome.js";
 import { runCommand } from "./src/commands.js";
 import { configureKnip, parseKnipReport } from "./src/knip.js";
@@ -36,6 +37,7 @@ function generateConfig({
   useSemgrep,
   licenseType,
   copyrightHolder,
+  agentTargets,
 }) {
   const targetDir = process.cwd();
   const packageJsonPath = join(targetDir, "package.json");
@@ -71,6 +73,7 @@ function generateConfig({
 
   if (!pkg.scripts) pkg.scripts = {};
   Object.assign(pkg.scripts, biome.scripts, knip.scripts);
+  if (isTS) pkg.scripts.typecheck ??= typescript.validate;
   if (semgrep) Object.assign(pkg.scripts, semgrep.scripts);
   if (hasLicenseHeader) {
     pkg.licenseHeader = configureLicenseHeader({
@@ -117,6 +120,7 @@ function generateConfig({
   runCommand(installCmd, installArgs);
 
   installLefthook(runCmd);
+  configureAgentSkills({ targetDir, templatesDir, agentTargets, isBun });
   console.log("\n🎉 Setup completed successfully!");
 }
 

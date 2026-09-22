@@ -7,6 +7,7 @@ import {
   rmSync,
   writeFileSync,
   existsSync,
+  lstatSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +15,10 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 const cli = fileURLToPath(new URL("../main.js", import.meta.url));
+const skillPaths = [
+  ".agents/skills/js-ts-quality-checks/SKILL.md",
+  ".claude/skills/js-ts-quality-checks/SKILL.md",
+];
 
 function fixture(t) {
   const cwd = mkdtempSync(join(tmpdir(), "quality-kit-test-"));
@@ -50,7 +55,13 @@ if (command === "pipx" && args[0] === "install") {
   return { cwd, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } };
 }
 
-function initialize(project, answers = ["js", "node", "1", "n", "n"], entrypoint = cli) {
+function initialize(
+  project,
+  answers = ["js", "node", "1", "n", "n"],
+  entrypoint = cli,
+  agentAnswers = [""],
+) {
+  answers = [...answers, ...agentAnswers];
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [entrypoint], project);
     let stdout = "";
@@ -138,15 +149,106 @@ for (const answer of ["", "   ", "js", " TS "]) {
       assert.deepEqual(knip.entry, ["src/index.ts", "index.ts", "src/main.ts", "main.ts"]);
       assert.deepEqual(knip.project, ["**/*.ts"]);
       assert.match(pkg.scripts.validate, /tsc --noEmit/);
+      assert.equal(pkg.scripts.typecheck, "tsc --noEmit");
       assert.match(hooks, /types-check/);
     } else {
       assert.deepEqual(knip.entry, ["src/index.js", "index.js", "src/main.js", "main.js"]);
       assert.deepEqual(knip.project, ["**/*.js"]);
       assert.doesNotMatch(pkg.scripts.validate, /tsc/);
+      assert.equal(pkg.scripts.typecheck, undefined);
       assert.doesNotMatch(hooks, /types-check/);
     }
   });
 }
+
+for (const runtime of ["node", "bun"]) {
+  for (const { answer, agents } of [
+    { answer: "", agents: [true, true] },
+    { answer: "1", agents: [true, false] },
+    { answer: "2", agents: [false, true] },
+    { answer: "3", agents: [true, true] },
+    { answer: "4", agents: [false, false] },
+  ]) {
+    test(`installs selected agent skills for ${runtime}, choice ${answer || "default"}`, async (t) => {
+      const project = fixture(t);
+      const result = await initialize(project, ["js", runtime, "1", "n", "n"], cli, [answer]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(result.stdout.indexOf("6. Install") > result.stdout.indexOf("5. Automatically"));
+      const runner = runtime === "bun" ? "bun run" : "npm run";
+      const template = readFileSync(
+        new URL("../templates/skills/js-ts-quality-checks/SKILL.md", import.meta.url),
+        "utf8",
+      );
+      for (const [index, relativePath] of skillPaths.entries()) {
+        const path = join(project.cwd, relativePath);
+        assert.equal(existsSync(path), agents[index]);
+        if (agents[index]) {
+          assert.ok(lstatSync(path).isFile());
+          const content = readFileSync(path, "utf8");
+          assert.equal(content, template.replaceAll("{{run}}", runner));
+          assert.doesNotMatch(content, /\{\{[^}]+\}\}/);
+          assert.ok(content.includes(`${runner} lint`));
+          assert.ok(result.stdout.includes(relativePath));
+        }
+      }
+      if (answer === "4") {
+        assert.equal(existsSync(join(project.cwd, ".agents")), false);
+        assert.equal(existsSync(join(project.cwd, ".claude")), false);
+      }
+    });
+  }
+
+  test(`preserves a custom typecheck command for ${runtime}`, async (t) => {
+    const project = fixture(t);
+    const pkgPath = join(project.cwd, "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath));
+    pkg.scripts.typecheck = "tsc --noEmit -p tsconfig.app.json";
+    writeFileSync(pkgPath, JSON.stringify(pkg));
+    const result = await initialize(project, ["ts", runtime, "1", "n", "n"]);
+    assert.equal(result.status, 0, result.stderr);
+    const generated = JSON.parse(readFileSync(pkgPath));
+    assert.equal(generated.scripts.typecheck, pkg.scripts.typecheck);
+    assert.equal(generated.scripts.validate, runtime === "bun"
+      ? "bunx @biomejs/biome check . && bun x tsc --noEmit && bunx knip"
+      : "npx @biomejs/biome check . && tsc --noEmit && npx knip");
+    assert.doesNotMatch(readFileSync(join(project.cwd, "lefthook.yml"), "utf8"), /tsconfig\.app/);
+  });
+}
+
+test("reprompts for an invalid agent choice", async (t) => {
+  const project = fixture(t);
+  const result = await initialize(project, undefined, cli, ["invalid", " 2 "]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Please choose 1, 2, 3 or 4/);
+  assert.equal(existsSync(join(project.cwd, skillPaths[0])), false);
+  assert.equal(existsSync(join(project.cwd, skillPaths[1])), true);
+});
+
+test("preserves existing skills and project instructions across repeated setup", async (t) => {
+  const project = fixture(t);
+  const existingPath = join(project.cwd, skillPaths[0]);
+  mkdirSync(join(project.cwd, ".agents/skills/js-ts-quality-checks"), { recursive: true });
+  const custom = "Custom quality-checking instructions.\n";
+  writeFileSync(existingPath, custom);
+  for (const path of ["AGENTS.md", "CLAUDE.md"]) {
+    writeFileSync(join(project.cwd, path), "Existing project instructions.\n");
+  }
+  const result = await initialize(project);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stderr.includes(`Skipping existing agent skill: ${skillPaths[0]}`));
+  assert.equal(readFileSync(existingPath, "utf8"), custom);
+  const claudeSkill = readFileSync(join(project.cwd, skillPaths[1]), "utf8");
+
+  for (const answer of ["3", "1", "4"]) {
+    const repeated = await initialize(project, undefined, cli, [answer]);
+    assert.equal(repeated.status, 0, repeated.stderr);
+    assert.equal(readFileSync(existingPath, "utf8"), custom);
+    assert.equal(readFileSync(join(project.cwd, skillPaths[1]), "utf8"), claudeSkill);
+  }
+  for (const path of ["AGENTS.md", "CLAUDE.md"]) {
+    assert.equal(readFileSync(join(project.cwd, path), "utf8"), "Existing project instructions.\n");
+  }
+});
 
 test("a failed dependency install stops setup before installing hooks", async (t) => {
   const project = fixture(t);
@@ -156,6 +258,7 @@ test("a failed dependency install stops setup before installing hooks", async (t
   assert.doesNotMatch(result.stdout, /Setup completed successfully/);
   const commands = readFileSync(join(project.cwd, "commands.jsonl"), "utf8");
   assert.doesNotMatch(commands, /lefthook","install/);
+  for (const path of skillPaths) assert.equal(existsSync(join(project.cwd, path)), false);
 });
 
 test("a failed hook install is reported as a setup failure", async (t) => {
@@ -164,6 +267,7 @@ test("a failed hook install is reported as a setup failure", async (t) => {
   const result = await initialize(project);
   assert.notEqual(result.status, 0);
   assert.doesNotMatch(result.stdout, /Setup completed successfully/);
+  for (const path of skillPaths) assert.equal(existsSync(join(project.cwd, path)), false);
 });
 
 test("invalid consumer package.json is rejected before configuration is written", async (t) => {
@@ -422,6 +526,7 @@ for (const runtime of ["node", "bun"]) {
         "dead-code": `${runCmd} knip`,
         "security-check": "semgrep scan --config=p/default --error",
         "license:fix": "node .license-header.cjs",
+        ...(isTS ? { typecheck: runtime === "bun" ? "bun x tsc --noEmit" : "tsc --noEmit" } : {}),
         validate: validate.join(" && "),
         report: [
           runtime === "bun"
@@ -434,6 +539,10 @@ for (const runtime of ["node", "bun"]) {
           `${runCmd} ${kit.name}@${kit.version} parse-report`,
         ].join(" && "),
       });
+
+      const codexSkill = readFileSync(join(project.cwd, skillPaths[0]), "utf8");
+      assert.equal(readFileSync(join(project.cwd, skillPaths[1]), "utf8"), codexSkill);
+      assert.ok(codexSkill.includes(`${runtime === "bun" ? "bun" : "npm"} run lint`));
 
       const hooks = [
         "pre-commit:",
@@ -497,6 +606,10 @@ test("the packed CLI initializes another project and parses its report", async (
   });
   assert.equal(unpacked.status, 0, unpacked.stderr);
   const packedRoot = join(packedDir, "package");
+  const packedSkill = readFileSync(
+    join(packedRoot, "templates/skills/js-ts-quality-checks/SKILL.md"),
+    "utf8",
+  );
   const kit = JSON.parse(readFileSync(join(packedRoot, "package.json")));
   const packedCli = join(packedRoot, kit.bin[kit.name]);
   const project = fixture(t);
@@ -505,6 +618,11 @@ test("the packed CLI initializes another project and parses its report", async (
   ], packedCli);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Setup completed successfully/);
+  for (const path of skillPaths) {
+    const content = readFileSync(join(project.cwd, path), "utf8");
+    assert.equal(content, packedSkill.replaceAll("{{run}}", "npm run"));
+    assert.doesNotMatch(content, /\{\{[^}]+\}\}/);
+  }
   for (const filename of ["license-header.cjs", ".semgrepignore"]) {
     const target = filename.startsWith(".") ? filename : `.${filename}`;
     assert.equal(

@@ -52,6 +52,21 @@ export async function askQuestions() {
     );
   }
 
+  console.log("\n6. Install the quality-checking skill for your coding agents:");
+  console.log("   1) Codex");
+  console.log("   2) Claude Code");
+  console.log("   3) Both (default)");
+  console.log("   4) Skip");
+  let agentAns;
+  do {
+    agentAns = (await rl.question("Enter a number [3]: ")).trim() || "3";
+    if (!["1", "2", "3", "4"].includes(agentAns))
+      console.log("Please choose 1, 2, 3 or 4.");
+  } while (!["1", "2", "3", "4"].includes(agentAns));
+  const agentTargets = [["codex"], ["claude"], ["codex", "claude"], []][
+    Number(agentAns) - 1
+  ];
+
   rl.close();
   return {
     isTS,
@@ -60,5 +75,6 @@ export async function askQuestions() {
     useSemgrep,
     licenseType,
     copyrightHolder,
+    agentTargets,
   };
 }
