@@ -1,0 +1,35 @@
+{
+  "name": "js-ts-quality-checker-kit",
+  "version": "1.0.0",
+  "description": "Initialize JavaScript and TypeScript quality tools in an existing project with npx.",
+  "license": "MIT",
+  "author": "Alexey Sedoykin <sedoykin@gmail.com> (https://github.com/Krusty84/js-ts-quality-checker-kit)",
+  "keywords": [
+    "biome",
+    "semgrep",
+    "knip",
+    "spdx",
+    "lefthook",
+    "codex",
+    "quality",
+    "javascript",
+    "typescript",
+    "checker"
+  ],
+  "main": "./main.js",
+  "type": "module",
+  "bin": {
+    "js-ts-quality-checker-kit": "./main.js"
+  },
+  "files": [
+    "main.js",
+    "src",
+    "templates"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
