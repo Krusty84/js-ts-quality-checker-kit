@@ -134,7 +134,7 @@ if (argCommand === "parse-report") {
   try {
     const { askQuestions } = await import("./src/questions.js");
     const { outro } = await import("@clack/prompts");
-    const answers = await askQuestions();
+    const answers = await askQuestions({ name: kit.name });
     if (answers === null) {
       process.exitCode = 130;
     } else {

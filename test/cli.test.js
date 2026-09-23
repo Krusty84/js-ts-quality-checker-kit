@@ -101,11 +101,14 @@ test("setup requires a terminal and leaves the consumer unchanged", (t) => {
 });
 
 test("Enter accepts English defaults and an empty holder skips license headers", async (t) => {
+  const kit = JSON.parse(readFileSync(new URL("../package.json", import.meta.url)));
   const project = fixture(t);
   const result = await initialize(project, ["", "", "", "", "", "", ""]);
   assert.equal(result.status, 0, result.stderr);
   for (const label of [
-    "Welcome to the quality standards initializer!",
+    kit.name,
+    "Author: Alexey Sedoykin",
+    "Contact|Support: www.linkedin.com/in/sedoykin | https://github.com/Krusty84/js-ts-quality-checker-kit",
     "JavaScript",
     "TypeScript",
     "Node.js",
@@ -128,6 +131,7 @@ test("Enter accepts English defaults and an empty holder skips license headers",
       result.stdout.includes(label),
       `Missing English UI text: ${label}`,
     );
+  assert.ok(!result.stdout.includes(`${kit.name} v${kit.version}`));
   assert.doesNotMatch(result.stdout + result.stderr, /[\u0400-\u04ff]/);
   const pkg = JSON.parse(readFileSync(join(project.cwd, "package.json")));
   assert.equal(pkg.scripts.typecheck, undefined);
@@ -1050,6 +1054,8 @@ test("the packed CLI initializes another project and parses its report", async (
   );
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Setup completed successfully/);
+  assert.ok(result.stdout.includes(kit.name));
+  assert.ok(!result.stdout.includes(`${kit.name} v${kit.version}`));
   for (const path of skillPaths) {
     const content = readFileSync(join(project.cwd, path), "utf8");
     assert.equal(content, packedSkill.replaceAll("{{run}}", "npm run"));
@@ -1090,8 +1096,6 @@ test("the packed CLI initializes another project and parses its report", async (
   assert.match(report.stdout, /Unused files: 1/);
   assert.match(report.stdout, /Unused exports\/types: 1/);
   assert.match(report.stdout, /Wasted disk space: 0\.02 KB/);
-  assert.doesNotMatch(
-    report.stdout,
-    /Welcome to the quality standards initializer/,
-  );
+  assert.ok(!report.stdout.includes(kit.name));
+  assert.doesNotMatch(report.stdout, /Author:|Contact\|Support:/);
 });
