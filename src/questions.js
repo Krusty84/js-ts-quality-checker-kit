@@ -59,12 +59,12 @@ export async function askQuestions({ name }) {
           {
             value: "application",
             label: "Application",
-            hint: "Standalone app; checks unused entry exports",
+            hint: "Standalone/Web-service application",
           },
           {
             value: "library",
-            label: "Library / npm package",
-            hint: "Reusable code; preserves public entry exports",
+            label: "Library/npm package",
+            hint: "Reusable code",
           },
           {
             value: "vscode",
