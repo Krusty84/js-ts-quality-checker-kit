@@ -32,7 +32,7 @@ export function configureBiome({ targetDir, isVSCode, runCmd }) {
       lint: `${runCmd} @biomejs/biome check .`,
       "lint:fix": `${runCmd} @biomejs/biome check --write .`,
     },
-    report: `${runCmd} @biomejs/biome check . > .reports/biome-report.txt || true`,
+    report: `${runCmd} @biomejs/biome check . > .reports/biome-report.txt || node -e "process.exit(0)"`,
     preCommit: {
       name: "biome-check",
       priority: 2,

@@ -93,12 +93,11 @@ function generateConfig({
   if (semgrep) validateParts.push(pkg.scripts["security-check"]);
   pkg.scripts["validate"] = validateParts.join(" && ");
 
-  const mkdirCmd = isBun
-    ? "mkdir -p .reports"
-    : "node -e \"const fs = require('fs'); if (!fs.existsSync('.reports')) fs.mkdirSync('.reports')\"";
+  const mkdirCmd =
+    "node -e \"require('node:fs').mkdirSync('.reports', { recursive: true })\"";
   const reportParts = [mkdirCmd];
   if (hasLicenseHeader)
-    reportParts.push(`${pkg.scripts["license:fix"]} || true`);
+    reportParts.push(`${pkg.scripts["license:fix"]} || node -e "process.exit(0)"`);
   reportParts.push(biome.report, knip.report);
   if (semgrep) reportParts.push(semgrep.report);
   reportParts.push(`${runCmd} ${kit.name}@${kit.version} parse-report`);

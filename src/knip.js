@@ -27,7 +27,7 @@ export function configureKnip({ targetDir, isTS, isVSCode, runCmd }) {
   return {
     dependency: "knip@5.43.0",
     scripts: { "dead-code": check },
-    report: `${runCmd} knip --reporter=json > .reports/knip-report.json || true`,
+    report: `${runCmd} knip --reporter=json > .reports/knip-report.json || node -e "process.exit(0)"`,
     prePush: { name: "dead-code-check", run: check },
   };
 }

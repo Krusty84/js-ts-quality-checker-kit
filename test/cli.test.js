@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   mkdtempSync,
   mkdirSync,
@@ -10,19 +10,22 @@ import {
   lstatSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 
-const cli = fileURLToPath(new URL("../main.js", import.meta.url));
+import {
+  cli, commandPath, initialize, packKit, pathEnv, runNpm,
+  systemPath, useLocalReportParser, writeCommand,
+} from "../test-support/cli.js";
+
 const skillPaths = [
   ".agents/skills/js-ts-quality-checks/SKILL.md",
   ".claude/skills/js-ts-quality-checks/SKILL.md",
 ];
 
 function fixture(t) {
-  const cwd = mkdtempSync(join(tmpdir(), "quality-kit-test-"));
-  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const cwd = mkdtempSync(join(tmpdir(), "quality kit тест-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 5 }));
   const bin = join(cwd, "bin");
   mkdirSync(bin);
   writeFileSync(
@@ -34,10 +37,9 @@ function fixture(t) {
     }),
   );
   for (const command of ["npm", "npx", "bun", "bunx", "semgrep", "pipx"]) {
-    writeFileSync(
-      join(bin, command),
-      `#!${process.execPath}
-const fs = require("node:fs");
+    writeCommand(
+      bin, command,
+      `const fs = require("node:fs");
 const command = ${JSON.stringify(command)};
 const args = process.argv.slice(2);
 fs.appendFileSync("commands.jsonl", JSON.stringify({ command, args }) + "\\n");
@@ -49,46 +51,9 @@ if (command === "pipx" && args[0] === "install") {
   fs.writeFileSync(".semgrep-installed", "");
 }
 `,
-      { mode: 0o755 },
     );
   }
-  return { cwd, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } };
-}
-
-function initialize(
-  project,
-  answers = ["js", "node", "1", "n", "n"],
-  entrypoint = cli,
-  agentAnswers = [""],
-) {
-  answers = [...answers, ...agentAnswers];
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [entrypoint], project);
-    let stdout = "";
-    let stderr = "";
-    let pending = "";
-    let index = 0;
-    const timeout = setTimeout(() => {
-      child.kill();
-      reject(new Error(`Initializer timed out: ${stdout}\n${stderr}`));
-    }, 10000);
-    child.stdout.on("data", (data) => {
-      stdout += data;
-      pending += data;
-      if (pending.endsWith(": ") && index < answers.length) {
-        child.stdin.write(`${answers[index++]}\n`);
-        pending = "";
-      }
-    });
-    child.stderr.on("data", (data) => {
-      stderr += data;
-    });
-    child.on("error", reject);
-    child.on("close", (status) => {
-      clearTimeout(timeout);
-      resolve({ status, stdout, stderr });
-    });
-  });
+  return { cwd, env: pathEnv([bin, systemPath]) };
 }
 
 test("initializer runs without installing its own tool dependencies", () => {
@@ -188,7 +153,7 @@ for (const runtime of ["node", "bun"]) {
           assert.equal(content, template.replaceAll("{{run}}", runner));
           assert.doesNotMatch(content, /\{\{[^}]+\}\}/);
           assert.ok(content.includes(`${runner} lint`));
-          assert.ok(result.stdout.includes(relativePath));
+          assert.ok(result.stdout.includes(join(relativePath)));
         }
       }
       if (answer === "4") {
@@ -235,7 +200,7 @@ test("preserves existing skills and project instructions across repeated setup",
   }
   const result = await initialize(project);
   assert.equal(result.status, 0, result.stderr);
-  assert.ok(result.stderr.includes(`Skipping existing agent skill: ${skillPaths[0]}`));
+  assert.ok(result.stderr.includes(`Skipping existing agent skill: ${join(skillPaths[0])}`));
   assert.equal(readFileSync(existingPath, "utf8"), custom);
   const claudeSkill = readFileSync(join(project.cwd, skillPaths[1]), "utf8");
 
@@ -314,6 +279,94 @@ test("malformed report exits with an error", (t) => {
   assert.notEqual(result.status, 0);
 });
 
+test("a missing Knip report exits with an error", (t) => {
+  const project = fixture(t);
+  const result = spawnSync(process.execPath, [cli, "parse-report"], {
+    ...project, encoding: "utf8",
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /not found/);
+});
+
+for (const runtime of ["node", "bun"]) {
+  for (const scenario of [
+    { name: "successful checks", exit: 0, license: false, security: false },
+    { name: "successful checks with headers and security", exit: 0, license: true, security: true },
+    { name: "failed checks", exit: 23, license: false, security: true },
+    { name: "failed checks and headers", exit: 23, license: true, security: true },
+    { name: "malformed Knip JSON", exit: 23, license: false, security: true, malformed: true },
+  ]) {
+    test(`executes the ${runtime} report in npm's shell: ${scenario.name}`, async (t) => {
+      const project = fixture(t);
+      const result = await initialize(project, [
+        "js", runtime, "1", scenario.security ? "y" : "n",
+        ...(scenario.license ? ["y", "mit", "Example Company"] : ["n"]),
+      ]);
+      assert.equal(result.status, 0, result.stderr);
+      const pkgPath = join(project.cwd, "package.json");
+      const pkg = JSON.parse(readFileSync(pkgPath));
+      useLocalReportParser(pkg, cli);
+      writeFileSync(pkgPath, JSON.stringify(pkg));
+      const bin = join(project.cwd, "bin");
+      const record = 'const fs = require("node:fs");\nconst record = (tool) => fs.appendFileSync("report-order.jsonl", JSON.stringify(tool) + "\\n");\n';
+      for (const runner of ["npx", "bunx"]) {
+        writeCommand(bin, runner, record + `
+const biome = process.argv[2] === "@biomejs/biome";
+record(biome ? "biome" : "knip");
+console.log(biome ? "Biome report" : ${JSON.stringify(scenario.malformed ? "{invalid" : '{"files":[],"issues":[]}')});
+process.exit(${scenario.exit});
+`);
+      }
+      writeCommand(bin, "semgrep", record + `
+record("semgrep");
+fs.writeFileSync(".reports/security-report.json", JSON.stringify({ results: [] }));
+process.exit(${scenario.exit});
+`);
+      if (scenario.license) {
+        writeFileSync(join(project.cwd, ".license-header.cjs"), record + `record("license"); process.exit(${scenario.exit});`);
+      }
+      // Exclude Git's Unix utilities so an installed true.exe cannot hide regressions.
+      project.env = pathEnv([bin, dirname(process.execPath)], project.env);
+      project.env.npm_config_script_shell = process.platform === "win32"
+        ? process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe"
+        : "/bin/sh";
+      if (process.platform === "win32") {
+        const probe = spawnSync("true", [], { ...project, shell: true, stdio: "ignore" });
+        assert.notEqual(probe.status, 0, "The regression test must not have true.exe on PATH");
+      }
+      // The second run also covers an existing report directory and overwriting reports.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        writeFileSync(join(project.cwd, "report-order.jsonl"), "");
+        const report = runNpm(["run", "report"], project);
+        assert.equal(report.status, scenario.malformed ? 1 : 0, report.stdout + report.stderr);
+        const order = readFileSync(join(project.cwd, "report-order.jsonl"), "utf8")
+          .trim().split("\n").map(JSON.parse);
+        assert.deepEqual(order, [
+          ...(scenario.license ? ["license"] : []), "biome", "knip",
+          ...(scenario.security ? ["semgrep"] : []),
+        ]);
+        assert.match(readFileSync(join(project.cwd, ".reports/biome-report.txt"), "utf8"), /Biome report/);
+        assert.equal(existsSync(join(project.cwd, ".reports/security-report.json")), scenario.security);
+        if (scenario.malformed) assert.match(report.stderr, /Error reading or parsing/);
+        else assert.match(report.stdout, /No dead code or unused files/);
+      }
+    });
+  }
+}
+
+test("Windows Semgrep preparation explains prerequisites only when selected", {
+  skip: process.platform !== "win32",
+}, async (t) => {
+  const project = fixture(t);
+  const enabled = await initialize(project, ["js", "node", "1", "y", "n"]);
+  assert.equal(enabled.status, 0, enabled.stderr);
+  assert.match(enabled.stdout, /Windows is beta/);
+  assert.match(enabled.stdout, /Python 3\.10\+.*pipx.*PATH.*PYTHONUTF8=1/);
+  const disabled = await initialize(project);
+  assert.equal(disabled.status, 0, disabled.stderr);
+  assert.doesNotMatch(disabled.stdout, /Windows is beta|PYTHONUTF8/);
+});
+
 for (const licenseType of ["mit", "apache", "proprietary"]) {
   test(`configures supported ${licenseType} license headers`, async (t) => {
     const project = fixture(t);
@@ -333,7 +386,7 @@ for (const licenseType of ["mit", "apache", "proprietary"]) {
     assert.equal(pkg.licenseHeader.yearRange, String(new Date().getFullYear()));
     assert.equal(pkg.scripts["license:fix"], "node .license-header.cjs");
     assert.ok(pkg.scripts.validate.startsWith("node .license-header.cjs && "));
-    assert.ok(pkg.scripts.report.includes("node .license-header.cjs || true"));
+    assert.ok(pkg.scripts.report.includes('node .license-header.cjs || node -e "process.exit(0)"'));
     assert.ok(existsSync(join(project.cwd, ".license-header.cjs")));
     const hooks = readFileSync(join(project.cwd, "lefthook.yml"), "utf8");
     assert.match(hooks, /run: node \.license-header\.cjs/);
@@ -355,7 +408,7 @@ test("defaults to MIT and runs the generated header script for Bun projects", as
   assert.equal(pkg.licenseHeader.licenseType, "mit");
   assert.equal(pkg.scripts["license:fix"], "node .license-header.cjs");
   assert.ok(pkg.scripts.validate.startsWith("node .license-header.cjs && "));
-  assert.ok(pkg.scripts.report.includes("node .license-header.cjs || true"));
+  assert.ok(pkg.scripts.report.includes('node .license-header.cjs || node -e "process.exit(0)"'));
   assert.match(
     readFileSync(join(project.cwd, "lefthook.yml"), "utf8"),
     /run: node \.license-header\.cjs/,
@@ -402,7 +455,7 @@ for (const scenario of [
     Object.assign(project.env, { SEMGREP_NEEDS_INSTALL: "1" }, scenario.env);
     if (scenario.missing) {
       project.env.PATH = join(project.cwd, "bin");
-      rmSync(join(project.env.PATH, scenario.missing));
+      rmSync(commandPath(project.env.PATH, scenario.missing));
     }
     const result = await initialize(project, [
       "js", "node", "1", "y", scenario.answer, "y", "mit", "Example Company",
@@ -529,13 +582,11 @@ for (const runtime of ["node", "bun"]) {
         ...(isTS ? { typecheck: runtime === "bun" ? "bun x tsc --noEmit" : "tsc --noEmit" } : {}),
         validate: validate.join(" && "),
         report: [
-          runtime === "bun"
-            ? "mkdir -p .reports"
-            : "node -e \"const fs = require('fs'); if (!fs.existsSync('.reports')) fs.mkdirSync('.reports')\"",
-          "node .license-header.cjs || true",
-          `${runCmd} @biomejs/biome check . > .reports/biome-report.txt || true`,
-          `${runCmd} knip --reporter=json > .reports/knip-report.json || true`,
-          "semgrep scan --config=p/default --json -o .reports/security-report.json || true",
+          "node -e \"require('node:fs').mkdirSync('.reports', { recursive: true })\"",
+          'node .license-header.cjs || node -e "process.exit(0)"',
+          `${runCmd} @biomejs/biome check . > .reports/biome-report.txt || node -e "process.exit(0)"`,
+          `${runCmd} knip --reporter=json > .reports/knip-report.json || node -e "process.exit(0)"`,
+          'semgrep scan --config=p/default --json -o .reports/security-report.json || node -e "process.exit(0)"',
           `${runCmd} ${kit.name}@${kit.version} parse-report`,
         ].join(" && "),
       });
@@ -589,23 +640,7 @@ for (const runtime of ["node", "bun"]) {
 }
 
 test("the packed CLI initializes another project and parses its report", async (t) => {
-  const packedDir = mkdtempSync(join(tmpdir(), "quality-kit-pack-"));
-  t.after(() => rmSync(packedDir, { recursive: true, force: true }));
-  const packed = spawnSync("npm", [
-    "pack", "--json", "--ignore-scripts", "--offline",
-    "--cache", join(packedDir, "cache"),
-    "--pack-destination", packedDir,
-  ], {
-    cwd: fileURLToPath(new URL("..", import.meta.url)),
-    encoding: "utf8",
-  });
-  assert.equal(packed.status, 0, packed.stderr);
-  const [archive] = JSON.parse(packed.stdout);
-  const unpacked = spawnSync("tar", ["-xzf", join(packedDir, archive.filename), "-C", packedDir], {
-    encoding: "utf8",
-  });
-  assert.equal(unpacked.status, 0, unpacked.stderr);
-  const packedRoot = join(packedDir, "package");
+  const packedRoot = packKit(t);
   const packedSkill = readFileSync(
     join(packedRoot, "templates/skills/js-ts-quality-checks/SKILL.md"),
     "utf8",

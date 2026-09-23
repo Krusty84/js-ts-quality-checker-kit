@@ -8,6 +8,11 @@ import { join } from "node:path";
 import { isCommandAvailable, runCommand } from "./commands.js";
 
 export async function prepareSemgrep(rl) {
+  if (process.platform === "win32") {
+    console.log(
+      "   Semgrep on Windows is beta. Prepare Python 3.10+, pipx and their PATH entries, and set PYTHONUTF8=1 before running scans. See https://docs.semgrep.dev/getting-started/quickstart. The kit does not change system settings.",
+    );
+  }
   if (isCommandAvailable("semgrep")) return true;
 
   const installAns = await rl.question(
@@ -59,7 +64,7 @@ export function configureSemgrep({ targetDir, templatesDir }) {
   const check = "semgrep scan --config=p/default --error";
   return {
     scripts: { "security-check": check },
-    report: "semgrep scan --config=p/default --json -o .reports/security-report.json || true",
+    report: 'semgrep scan --config=p/default --json -o .reports/security-report.json || node -e "process.exit(0)"',
     prePush: { name: "security-scan", run: check },
   };
 }

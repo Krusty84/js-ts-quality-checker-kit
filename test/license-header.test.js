@@ -120,10 +120,10 @@ test("preserves BOM, shebang and line endings, including a shebang without a new
   }
 });
 
-test("handles Git paths and excludes ignored, generated, linked and missing files", (t) => {
+test("handles Git paths and excludes ignored, generated and missing files", (t) => {
   const cwd = fixture(t);
   const source = "export const value = 1;\n";
-  const included = ["tracked.js", "with spaces.ts", "with\nnewline.tsx"];
+  const included = ["tracked.js", "with spaces.ts", "кириллица.tsx"];
   const excluded = ["ignored.js", "notes.txt", "module.mjs", "outside.txt"];
   for (const file of [...included, ...excluded, "deleted.js"]) {
     writeFileSync(join(cwd, file), source);
@@ -135,8 +135,6 @@ test("handles Git paths and excludes ignored, generated, linked and missing file
     excluded.push(file);
   }
   writeFileSync(join(cwd, ".gitignore"), "ignored.js\n");
-  symlinkSync("outside.txt", join(cwd, "linked.js"));
-  symlinkSync("absent.txt", join(cwd, "broken-link.js"));
   const git = spawnSync("git", ["add", "tracked.js", "deleted.js", "dist/generated.js"], {
     cwd,
     encoding: "utf8",
@@ -153,4 +151,33 @@ test("handles Git paths and excludes ignored, generated, linked and missing file
   }
   assert.equal(existsSync(join(cwd, "deleted.js")), false);
   assert.equal(readFileSync(join(cwd, ".license-header.cjs"), "utf8"), helperBefore);
+});
+
+test("handles a Git filename containing a newline", {
+  skip: process.platform === "win32" && "Windows filenames cannot contain newlines",
+}, (t) => {
+  const cwd = fixture(t);
+  const path = join(cwd, "with\nnewline.tsx");
+  writeFileSync(path, "export {};\n");
+  applyHeaders(cwd);
+  assert.equal(readFileSync(path, "utf8"), mitHeader + "export {};\n");
+});
+
+test("excludes symbolic links, including broken links", (t) => {
+  const cwd = fixture(t);
+  const source = "export {};\n";
+  writeFileSync(join(cwd, "outside.txt"), source);
+  try {
+    symlinkSync("outside.txt", join(cwd, "linked.js"));
+    symlinkSync("absent.txt", join(cwd, "broken-link.js"));
+  } catch (error) {
+    if (["EPERM", "EACCES", "ENOSYS", "ENOTSUP"].includes(error.code)) {
+      t.skip(`Symbolic links unavailable: ${error.code}`);
+      return;
+    }
+    throw error;
+  }
+  applyHeaders(cwd);
+  assert.equal(readFileSync(join(cwd, "outside.txt"), "utf8"), source);
+  assert.equal(existsSync(join(cwd, "absent.txt")), false);
 });
