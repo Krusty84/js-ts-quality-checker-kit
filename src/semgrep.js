@@ -7,7 +7,7 @@ import { cpSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isCommandAvailable, runCommand } from "./commands.js";
 
-export async function prepareSemgrep(rl) {
+export async function prepareSemgrep(confirmInstall) {
   if (process.platform === "win32") {
     console.log(
       "   Semgrep on Windows is beta. Prepare Python 3.10+, pipx and their PATH entries, and set PYTHONUTF8=1 before running scans. See https://docs.semgrep.dev/getting-started/quickstart. The kit does not change system settings.",
@@ -15,10 +15,7 @@ export async function prepareSemgrep(rl) {
   }
   if (isCommandAvailable("semgrep")) return true;
 
-  const installAns = await rl.question(
-    "   Semgrep CLI is unavailable. Install it with pipx now? (y/n) [n]: ",
-  );
-  if (installAns.trim().toLowerCase() !== "y") {
+  if (!(await confirmInstall())) {
     console.warn(
       "⚠️  Installation skipped. Continuing without Semgrep security checks.",
     );

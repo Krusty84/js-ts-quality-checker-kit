@@ -1,20 +1,20 @@
 {
   "name": "js-ts-quality-checker-kit",
   "version": "1.0.0",
-  "description": "Initialize JavaScript and TypeScript quality tools in an existing project with npx.",
+  "description": "The package for (manual and AI-based) quality checking of JS and TS code using Biome, Semgrep, Knip, etc.",
   "license": "MIT",
   "author": "Alexey Sedoykin <sedoykin@gmail.com> (https://github.com/Krusty84/js-ts-quality-checker-kit)",
   "keywords": [
-    "biome",
-    "semgrep",
-    "knip",
-    "spdx",
-    "lefthook",
-    "codex",
     "quality",
     "javascript",
     "typescript",
-    "checker"
+    "checker",
+    "biome",
+    "semgrep",
+    "knip",
+    "agent",
+    "claude",
+    "codex"
   ],
   "main": "./main.js",
   "type": "module",
@@ -27,11 +27,14 @@
     "templates"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20.12.0"
+  },
+  "dependencies": {
+    "@clack/prompts": "1.8.1"
   },
   "scripts": {
     "test": "node --test test/cli.test.js test/license-header.test.js",
     "test:smoke": "node --test test/smoke.js",
-    "test:semgrep": "node --test scripts/semgrep-smoke.js"
+    "test:semgrep": "node --test test/semgrep-smoke.js"
   }
 }

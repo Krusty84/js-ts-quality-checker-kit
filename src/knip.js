@@ -6,10 +6,10 @@
 import { writeFileSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-export function configureKnip({ targetDir, isTS, isVSCode, runCmd }) {
+export function configureKnip({ targetDir, projectType, runCmd }) {
   const knipConfig = { $schema: "https://unpkg.com/knip@5.43.0/schema.json" };
-  const extension = isTS ? "ts" : "js";
-  knipConfig.entry = isVSCode
+  const extension = "{js,jsx,mjs,cjs,ts,tsx,mts,cts}";
+  knipConfig.entry = projectType === "vscode"
     ? [`src/extension.${extension}`, `extension.${extension}`]
     : [
         `src/index.${extension}`,
@@ -18,6 +18,7 @@ export function configureKnip({ targetDir, isTS, isVSCode, runCmd }) {
         `main.${extension}`,
       ];
   knipConfig.project = [`**/*.${extension}`];
+  knipConfig.includeEntryExports = projectType === "application";
   writeFileSync(
     join(targetDir, "knip.json"),
     JSON.stringify(knipConfig, null, 2),

@@ -22,7 +22,6 @@ import {
   licenseHeaderScripts,
   validateLicenseType,
 } from "./src/license-header.js";
-import { askQuestions } from "./src/questions.js";
 import { configureSemgrep } from "./src/semgrep.js";
 import { getTypeScriptCommands } from "./src/typescript.js";
 
@@ -33,7 +32,7 @@ const [, , argCommand] = process.argv;
 function generateConfig({
   isTS,
   isBun,
-  isVSCode,
+  projectType,
   useSemgrep,
   licenseType,
   copyrightHolder,
@@ -55,8 +54,12 @@ function generateConfig({
   const runCmd = isBun ? "bunx" : "npx";
   const hasLicenseHeader = licenseType && copyrightHolder;
 
-  const biome = configureBiome({ targetDir, isVSCode, runCmd });
-  const knip = configureKnip({ targetDir, isTS, isVSCode, runCmd });
+  const biome = configureBiome({
+    targetDir,
+    isVSCode: projectType === "vscode",
+    runCmd,
+  });
+  const knip = configureKnip({ targetDir, projectType, runCmd });
   const semgrep = useSemgrep
     ? configureSemgrep({ targetDir, templatesDir })
     : null;
@@ -120,14 +123,26 @@ function generateConfig({
 
   installLefthook(runCmd);
   configureAgentSkills({ targetDir, templatesDir, agentTargets, isBun });
-  console.log("\n🎉 Setup completed successfully!");
 }
 
 if (argCommand === "parse-report") {
   parseKnipReport();
+} else if (!process.stdin.isTTY || !process.stdout.isTTY) {
+  console.error("Interactive setup requires a terminal. Run this command in a terminal.");
+  process.exitCode = 1;
 } else {
-  askQuestions().then(generateConfig).catch((err) => {
+  try {
+    const { askQuestions } = await import("./src/questions.js");
+    const { outro } = await import("@clack/prompts");
+    const answers = await askQuestions();
+    if (answers === null) {
+      process.exitCode = 130;
+    } else {
+      generateConfig(answers);
+      outro("Setup completed successfully!");
+    }
+  } catch (err) {
     console.error("An error occurred:", err);
-    process.exit(1);
-  });
+    process.exitCode = 1;
+  }
 }
