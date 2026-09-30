@@ -96,15 +96,10 @@ function generateConfig({
   if (semgrep) validateParts.push(pkg.scripts["security-check"]);
   pkg.scripts["validate"] = validateParts.join(" && ");
 
-  const mkdirCmd =
-    "node -e \"require('node:fs').mkdirSync('.reports', { recursive: true })\"";
-  const reportParts = [mkdirCmd];
-  if (hasLicenseHeader)
-    reportParts.push(`${pkg.scripts["license:fix"]} || node -e "process.exit(0)"`);
-  reportParts.push(biome.report, knip.report);
-  if (semgrep) reportParts.push(semgrep.report);
-  reportParts.push(`${runCmd} ${kit.name}@${kit.version} parse-report`);
-  pkg.scripts["report"] = reportParts.join(" && ");
+  const reportCommand = `${runCmd} ${kit.name}@${kit.version} report`;
+  const packageManager = isBun ? "bun" : "npm";
+  pkg.scripts.report = `${reportCommand} --format=human --package-manager=${packageManager}`;
+  pkg.scripts["report:agent"] = `${reportCommand} --format=json --package-manager=${packageManager}`;
 
   writeFileSync(packageJsonPath, JSON.stringify(pkg, null, 2));
 
@@ -125,7 +120,10 @@ function generateConfig({
   configureAgentSkills({ targetDir, templatesDir, agentTargets, isBun });
 }
 
-if (argCommand === "parse-report") {
+if (argCommand === "report") {
+  const { runReportCli } = await import("./src/report.js");
+  process.exitCode = runReportCli(process.argv.slice(3));
+} else if (argCommand === "parse-report") {
   parseKnipReport();
 } else if (!process.stdin.isTTY || !process.stdout.isTTY) {
   console.error("Interactive setup requires a terminal. Run this command in a terminal.");

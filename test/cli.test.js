@@ -16,7 +16,7 @@ import {
   lstatSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -26,16 +26,14 @@ import {
   interact,
   packKit,
   pathEnv,
-  runNpm,
   systemPath,
-  useLocalReportParser,
   writeCommand,
 } from "./cli.js";
 import { validateLicenseType } from "../src/license-header.js";
 
 const skillPaths = [
-  ".agents/skills/js-ts-quality-checks/SKILL.md",
-  ".claude/skills/js-ts-quality-checks/SKILL.md",
+  ".agents/skills/js-ts-quality-checker/SKILL.md",
+  ".claude/skills/js-ts-quality-checker/SKILL.md",
 ];
 
 function fixture(t) {
@@ -114,7 +112,7 @@ test("Enter accepts English defaults and an empty holder skips license headers",
     "Node.js",
     "Bun",
     "Application",
-    "Library / npm package",
+    "Library/npm package",
     "VS Code extension",
     "Yes",
     "No",
@@ -238,11 +236,11 @@ test("initializes the consumer and generates a report command for the kit", asyn
   assert.equal(pkg.name, "unrelated-consumer");
   assert.equal(pkg.scripts.start, "node src/index.js");
   assert.deepEqual(pkg.dependencies, { existing: "1.0.0" });
-  assert.match(pkg.scripts.report, /js-ts-quality-checker-kit.* parse-report/);
+  assert.match(pkg.scripts.report, /js-ts-quality-checker-kit.* report --format=human --package-manager=npm/);
   assert.doesNotMatch(pkg.scripts.report, /unrelated-consumer/);
   assert.ok(existsSync(join(project.cwd, "biome.json")));
   const biome = JSON.parse(readFileSync(join(project.cwd, "biome.json")));
-  assert.deepEqual(biome.files.ignore, ["node_modules/**"]);
+  assert.deepEqual(biome.files.ignore, ["node_modules/**", ".reports/**"]);
   assert.ok(existsSync(join(project.cwd, "knip.json")));
   assert.ok(existsSync(join(project.cwd, "lefthook.yml")));
   assert.equal(existsSync(join(project.cwd, ".license-header.cjs")), false);
@@ -301,7 +299,7 @@ for (const answer of ["", "js", "ts"]) {
 
 for (const runtime of ["node", "bun"]) {
   for (const { answer, agents } of [
-    { answer: "", agents: [true, true] },
+    { answer: "", agents: [true, false] },
     { answer: "1", agents: [true, false] },
     { answer: "2", agents: [false, true] },
     { answer: "3", agents: [true, true] },
@@ -323,7 +321,7 @@ for (const runtime of ["node", "bun"]) {
       const runner = runtime === "bun" ? "bun run" : "npm run";
       const template = readFileSync(
         new URL(
-          "../templates/skills/js-ts-quality-checks/SKILL.md",
+          "../templates/skills/js-ts-quality-checker/SKILL.md",
           import.meta.url,
         ),
         "utf8",
@@ -373,7 +371,7 @@ for (const runtime of ["node", "bun"]) {
 test("preserves existing skills and project instructions across repeated setup", async (t) => {
   const project = fixture(t);
   const existingPath = join(project.cwd, skillPaths[0]);
-  mkdirSync(join(project.cwd, ".agents/skills/js-ts-quality-checks"), {
+  mkdirSync(join(project.cwd, ".agents/skills/js-ts-quality-checker"), {
     recursive: true,
   });
   const custom = "Custom quality-checking instructions.\n";
@@ -484,132 +482,6 @@ test("a missing Knip report exits with an error", (t) => {
   assert.match(result.stderr, /not found/);
 });
 
-for (const runtime of ["node", "bun"]) {
-  for (const scenario of [
-    { name: "successful checks", exit: 0, license: false, security: false },
-    {
-      name: "successful checks with headers and security",
-      exit: 0,
-      license: true,
-      security: true,
-    },
-    { name: "failed checks", exit: 23, license: false, security: true },
-    {
-      name: "failed checks and headers",
-      exit: 23,
-      license: true,
-      security: true,
-    },
-    {
-      name: "malformed Knip JSON",
-      exit: 23,
-      license: false,
-      security: true,
-      malformed: true,
-    },
-  ]) {
-    test(`executes the ${runtime} report in npm's shell: ${scenario.name}`, async (t) => {
-      const project = fixture(t);
-      const result = await initialize(project, [
-        "js",
-        runtime,
-        "application",
-        scenario.security ? "y" : "n",
-        ...(scenario.license ? ["y", "mit", "Example Company"] : ["n"]),
-      ]);
-      assert.equal(result.status, 0, result.stderr);
-      const pkgPath = join(project.cwd, "package.json");
-      const pkg = JSON.parse(readFileSync(pkgPath));
-      useLocalReportParser(pkg, cli);
-      writeFileSync(pkgPath, JSON.stringify(pkg));
-      const bin = join(project.cwd, "bin");
-      const record =
-        'const fs = require("node:fs");\nconst record = (tool) => fs.appendFileSync("report-order.jsonl", JSON.stringify(tool) + "\\n");\n';
-      for (const runner of ["npx", "bunx"]) {
-        writeCommand(
-          bin,
-          runner,
-          record +
-            `
-const biome = process.argv[2] === "@biomejs/biome";
-record(biome ? "biome" : "knip");
-console.log(biome ? "Biome report" : ${JSON.stringify(scenario.malformed ? "{invalid" : '{"files":[],"issues":[]}')});
-process.exit(${scenario.exit});
-`,
-        );
-      }
-      writeCommand(
-        bin,
-        "semgrep",
-        record +
-          `
-record("semgrep");
-fs.writeFileSync(".reports/security-report.json", JSON.stringify({ results: [] }));
-process.exit(${scenario.exit});
-`,
-      );
-      if (scenario.license) {
-        writeFileSync(
-          join(project.cwd, ".license-header.cjs"),
-          record + `record("license"); process.exit(${scenario.exit});`,
-        );
-      }
-      // Exclude Git's Unix utilities so an installed true.exe cannot hide regressions.
-      project.env = pathEnv([bin, dirname(process.execPath)], project.env);
-      project.env.npm_config_script_shell =
-        process.platform === "win32"
-          ? (process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe")
-          : "/bin/sh";
-      if (process.platform === "win32") {
-        const probe = spawnSync("true", [], {
-          ...project,
-          shell: true,
-          stdio: "ignore",
-        });
-        assert.notEqual(
-          probe.status,
-          0,
-          "The regression test must not have true.exe on PATH",
-        );
-      }
-      // The second run also covers an existing report directory and overwriting reports.
-      for (let attempt = 0; attempt < 2; attempt++) {
-        writeFileSync(join(project.cwd, "report-order.jsonl"), "");
-        const report = runNpm(["run", "report"], project);
-        assert.equal(
-          report.status,
-          scenario.malformed ? 1 : 0,
-          report.stdout + report.stderr,
-        );
-        const order = readFileSync(
-          join(project.cwd, "report-order.jsonl"),
-          "utf8",
-        )
-          .trim()
-          .split("\n")
-          .map(JSON.parse);
-        assert.deepEqual(order, [
-          ...(scenario.license ? ["license"] : []),
-          "biome",
-          "knip",
-          ...(scenario.security ? ["semgrep"] : []),
-        ]);
-        assert.match(
-          readFileSync(join(project.cwd, ".reports/biome-report.txt"), "utf8"),
-          /Biome report/,
-        );
-        assert.equal(
-          existsSync(join(project.cwd, ".reports/security-report.json")),
-          scenario.security,
-        );
-        if (scenario.malformed)
-          assert.match(report.stderr, /Error reading or parsing/);
-        else assert.match(report.stdout, /No dead code or unused files/);
-      }
-    });
-  }
-}
-
 test(
   "Windows Semgrep preparation explains prerequisites only when selected",
   {
@@ -646,11 +518,7 @@ for (const licenseType of ["mit", "apache", "proprietary"]) {
     assert.equal(pkg.licenseHeader.yearRange, String(new Date().getFullYear()));
     assert.equal(pkg.scripts["license:fix"], "node .license-header.cjs");
     assert.ok(pkg.scripts.validate.startsWith("node .license-header.cjs && "));
-    assert.ok(
-      pkg.scripts.report.includes(
-        'node .license-header.cjs || node -e "process.exit(0)"',
-      ),
-    );
+    assert.doesNotMatch(pkg.scripts.report, /license-header|license:fix|lint:fix|validate/);
     assert.ok(existsSync(join(project.cwd, ".license-header.cjs")));
     const hooks = readFileSync(join(project.cwd, "lefthook.yml"), "utf8");
     assert.match(hooks, /run: node \.license-header\.cjs/);
@@ -678,11 +546,7 @@ test("defaults to MIT and runs the generated header script for Bun projects", as
   assert.equal(pkg.licenseHeader.licenseType, "mit");
   assert.equal(pkg.scripts["license:fix"], "node .license-header.cjs");
   assert.ok(pkg.scripts.validate.startsWith("node .license-header.cjs && "));
-  assert.ok(
-    pkg.scripts.report.includes(
-      'node .license-header.cjs || node -e "process.exit(0)"',
-    ),
-  );
+  assert.doesNotMatch(pkg.scripts.report, /license-header|license:fix|lint:fix|validate/);
   assert.match(
     readFileSync(join(project.cwd, "lefthook.yml"), "utf8"),
     /run: node \.license-header\.cjs/,
@@ -836,7 +700,7 @@ for (const runtime of ["node", "bun"]) {
     const pkg = JSON.parse(readFileSync(join(project.cwd, "package.json")));
     assert.match(pkg.scripts["security-check"], /^semgrep scan /);
     assert.match(pkg.scripts.validate, /semgrep scan /);
-    assert.match(pkg.scripts.report, /semgrep scan .*security-report\.json/);
+    assert.match(pkg.scripts.report, / report --format=human/);
     assert.ok(existsSync(join(project.cwd, ".semgrepignore")));
     assert.match(
       readFileSync(join(project.cwd, "lefthook.yml"), "utf8"),
@@ -906,8 +770,8 @@ for (const runtime of ["node", "bun"]) {
             },
             files: {
               ignore: projectType === "vscode"
-                ? ["out/**", "dist/**", "node_modules/**"]
-                : ["node_modules/**"],
+                ? ["out/**", "dist/**", "node_modules/**", ".reports/**"]
+                : ["node_modules/**", ".reports/**"],
             },
           },
           null,
@@ -931,6 +795,7 @@ for (const runtime of ["node", "bun"]) {
                   "main.{js,jsx,mjs,cjs,ts,tsx,mts,cts}",
                 ],
             project: ["**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"],
+            ignore: [".reports/**"],
             includeEntryExports: projectType === "application",
           },
           null,
@@ -964,14 +829,8 @@ for (const runtime of ["node", "bun"]) {
             }
           : {}),
         validate: validate.join(" && "),
-        report: [
-          "node -e \"require('node:fs').mkdirSync('.reports', { recursive: true })\"",
-          'node .license-header.cjs || node -e "process.exit(0)"',
-          `${runCmd} @biomejs/biome check . > .reports/biome-report.txt || node -e "process.exit(0)"`,
-          `${runCmd} knip --reporter=json > .reports/knip-report.json || node -e "process.exit(0)"`,
-          'semgrep scan --config=p/default --json -o .reports/security-report.json || node -e "process.exit(0)"',
-          `${runCmd} ${kit.name}@${kit.version} parse-report`,
-        ].join(" && "),
+        report: `${runCmd} ${kit.name}@${kit.version} report --format=human --package-manager=${runtime === "bun" ? "bun" : "npm"}`,
+        "report:agent": `${runCmd} ${kit.name}@${kit.version} report --format=json --package-manager=${runtime === "bun" ? "bun" : "npm"}`,
       });
 
       const codexSkill = readFileSync(join(project.cwd, skillPaths[0]), "utf8");
@@ -1041,7 +900,7 @@ for (const runtime of ["node", "bun"]) {
 test("the packed CLI initializes another project and parses its report", async (t) => {
   const packedRoot = packKit(t);
   const packedSkill = readFileSync(
-    join(packedRoot, "templates/skills/js-ts-quality-checks/SKILL.md"),
+    join(packedRoot, "templates/skills/js-ts-quality-checker/SKILL.md"),
     "utf8",
   );
   const kit = JSON.parse(readFileSync(join(packedRoot, "package.json")));
@@ -1073,7 +932,7 @@ test("the packed CLI initializes another project and parses its report", async (
   }
   const pkg = JSON.parse(readFileSync(join(project.cwd, "package.json")));
   assert.ok(
-    pkg.scripts.report.endsWith(`npx ${kit.name}@${kit.version} parse-report`),
+    pkg.scripts.report === `npx ${kit.name}@${kit.version} report --format=human --package-manager=npm`,
   );
   mkdirSync(join(project.cwd, ".reports"));
   writeFileSync(join(project.cwd, "unused.js"), "export const unused = 1;\n");
@@ -1098,4 +957,16 @@ test("the packed CLI initializes another project and parses its report", async (
   assert.match(report.stdout, /Wasted disk space: 0\.02 KB/);
   assert.ok(!report.stdout.includes(kit.name));
   assert.doesNotMatch(report.stdout, /Author:|Contact\|Support:/);
+  for (const format of ["human", "json"]) {
+    const collected = spawnSync(process.execPath, [packedCli, "report", `--format=${format}`], {
+      ...project,
+      encoding: "utf8",
+    });
+    assert.equal(collected.status, 2, collected.stdout + collected.stderr);
+    const summary = JSON.parse(readFileSync(join(project.cwd, ".reports/report.json")));
+    assert.equal(summary.checks.length, 4);
+    if (format === "json") assert.deepEqual(JSON.parse(collected.stdout), summary);
+    else assert.match(collected.stdout, /Complete: false; exit code: 2/);
+    assert.doesNotMatch(collected.stderr, /prompts|ERR_MODULE_NOT_FOUND|requires a terminal/);
+  }
 });

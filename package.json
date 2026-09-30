@@ -33,7 +33,7 @@
     "@clack/prompts": "1.8.1"
   },
   "scripts": {
-    "test": "node --test test/cli.test.js test/license-header.test.js",
+    "test": "node --test test/cli.test.js test/license-header.test.js test/report.test.js",
     "test:smoke": "node --test test/smoke.js",
     "test:semgrep": "node --test test/semgrep-smoke.js"
   }

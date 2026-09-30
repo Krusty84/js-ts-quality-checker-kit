@@ -55,13 +55,12 @@ export function configureSemgrep({ targetDir, templatesDir }) {
   else
     writeFileSync(
       join(targetDir, ".semgrepignore"),
-      "node_modules/\ndist/\nout/\n",
+      "node_modules/\ndist/\nout/\n.reports/\n",
     );
 
   const check = "semgrep scan --config=p/default --error";
   return {
     scripts: { "security-check": check },
-    report: 'semgrep scan --config=p/default --json -o .reports/security-report.json || node -e "process.exit(0)"',
     prePush: { name: "security-scan", run: check },
   };
 }

@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { configureSemgrep, prepareSemgrep } from "../src/semgrep.js";
-import { runNpm } from "./cli.js";
+import { cli, runNpm } from "./cli.js";
 
 test("native Semgrep scans UTF-8 sources with a local rule", async (t) => {
   const cwd = mkdtempSync(join(tmpdir(), "semgrep smoke проверка-"));
@@ -39,7 +39,8 @@ test("native Semgrep scans UTF-8 sources with a local rule", async (t) => {
     JSON.stringify({
       scripts: {
         "security-check": localRule(configured.scripts["security-check"]),
-        report: localRule(configured.report),
+        report: `node "${cli.replaceAll("\\", "/")}" report --format=human --package-manager=npm`,
+        "report:agent": `node "${cli.replaceAll("\\", "/")}" report --format=json --package-manager=npm`,
       },
     }),
   );
@@ -56,6 +57,7 @@ test("native Semgrep scans UTF-8 sources with a local rule", async (t) => {
     ].join("\n"),
   );
   mkdirSync(join(cwd, ".reports"));
+  writeFileSync(join(cwd, ".reports/generated.js"), 'eval("ignored report");\n');
   const options = {
     cwd,
     timeout: 120000,
@@ -76,8 +78,21 @@ test("native Semgrep scans UTF-8 sources with a local rule", async (t) => {
   writeFileSync(source, '// Привет\neval("1 + 1");\n');
   const finding = runNpm(["run", "security-check"], options);
   assert.equal(finding.status, 1, finding.stdout + finding.stderr);
-  const report = runNpm(["run", "report"], options);
-  assert.equal(report.status, 0, report.stdout + report.stderr);
+  let previous;
+  for (const name of ["report", "report:agent"]) {
+    const output = runNpm(["run", "--silent", name], options);
+    // This fixture intentionally has no mandatory lint/dead-code scripts.
+    assert.equal(output.status, 2, output.stdout + output.stderr);
+    const report = JSON.parse(readFileSync(join(cwd, ".reports/report.json")));
+    const security = report.checks.find((check) => check.name === "security-check");
+    assert.equal(security.status, "completed", JSON.stringify(security));
+    assert.equal(security.findingsCount, 1);
+    assert.equal(security.exitCode, 1);
+    assert.ok(security.version);
+    if (previous) assert.deepEqual(security, previous);
+    previous = security;
+    if (name === "report:agent") assert.deepEqual(JSON.parse(output.stdout), report);
+  }
   const data = JSON.parse(
     readFileSync(join(cwd, ".reports/security-report.json"), "utf8"),
   );

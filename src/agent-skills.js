@@ -14,7 +14,7 @@ export function configureAgentSkills({
 }) {
   if (agentTargets.length === 0) return;
 
-  const skillPath = join("skills", "js-ts-quality-checks", "SKILL.md");
+  const skillPath = join("skills", "js-ts-quality-checker", "SKILL.md");
   const content = readFileSync(join(templatesDir, skillPath), "utf8")
     .replaceAll("{{run}}", isBun ? "bun run" : "npm run");
   const locations = { codex: ".agents", claude: ".claude" };

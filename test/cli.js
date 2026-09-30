@@ -100,21 +100,22 @@ export function packKit(t) {
   return packedRoot;
 }
 
-export function useLocalReportParser(pkg, entrypoint) {
-  const publishedParser =
-    /(?:npx|bunx) js-ts-quality-checker-kit@[^ ]+ parse-report$/;
-  assert.match(pkg.scripts.report, publishedParser);
-  pkg.scripts.report = pkg.scripts.report.replace(
-    publishedParser,
-    () => `node "${entrypoint.replaceAll("\\", "/")}" parse-report`,
-  );
+export function useLocalReportCommands(pkg, entrypoint) {
+  const publishedCommand = /^(?:npx|bunx) js-ts-quality-checker-kit@[^ ]+ report /;
+  for (const name of ["report", "report:agent"]) {
+    assert.match(pkg.scripts[name], publishedCommand);
+    pkg.scripts[name] = pkg.scripts[name].replace(
+      publishedCommand,
+      () => `node "${entrypoint.replaceAll("\\", "/")}" report `,
+    );
+  }
 }
 
 export function initialize(
   project,
   answers = ["js", "node", "application", "n", "n"],
   entrypoint = cli,
-  agentAnswers = [""],
+  agentAnswers = ["3"],
   timeoutMs = 10000,
 ) {
   const [language, runtime, projectType, semgrep, license, ...details] =
@@ -146,10 +147,10 @@ export function initialize(
   }
   const agentKeys = {
     "": "\r",
-    1: `${down} \r`,
-    2: " \r",
-    3: "\r",
-    4: ` ${down} \r`,
+    1: "\r",
+    2: ` ${down} \r`,
+    3: `${down} \r`,
+    4: " \r",
   };
   steps.push([
     "Select coding agents for the quality-checking skill.",

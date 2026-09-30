@@ -18,8 +18,8 @@ export function configureBiome({ targetDir, isVSCode, runCmd }) {
   };
   biomeConfig.files = {
     ignore: isVSCode
-      ? ["out/**", "dist/**", "node_modules/**"]
-      : ["node_modules/**"],
+      ? ["out/**", "dist/**", "node_modules/**", ".reports/**"]
+      : ["node_modules/**", ".reports/**"],
   };
   writeFileSync(
     join(targetDir, "biome.json"),
@@ -32,7 +32,6 @@ export function configureBiome({ targetDir, isVSCode, runCmd }) {
       lint: `${runCmd} @biomejs/biome check .`,
       "lint:fix": `${runCmd} @biomejs/biome check --write .`,
     },
-    report: `${runCmd} @biomejs/biome check . > .reports/biome-report.txt || node -e "process.exit(0)"`,
     preCommit: {
       name: "biome-check",
       priority: 2,

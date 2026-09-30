@@ -5,6 +5,7 @@
 
 import { writeFileSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { inspectKnip } from "./report-formats.js";
 
 export function configureKnip({ targetDir, projectType, runCmd }) {
   const knipConfig = { $schema: "https://unpkg.com/knip@5.43.0/schema.json" };
@@ -18,6 +19,7 @@ export function configureKnip({ targetDir, projectType, runCmd }) {
         `main.${extension}`,
       ];
   knipConfig.project = [`**/*.${extension}`];
+  knipConfig.ignore = [".reports/**"];
   knipConfig.includeEntryExports = projectType === "application";
   writeFileSync(
     join(targetDir, "knip.json"),
@@ -28,7 +30,6 @@ export function configureKnip({ targetDir, projectType, runCmd }) {
   return {
     dependency: "knip@5.43.0",
     scripts: { "dead-code": check },
-    report: `${runCmd} knip --reporter=json > .reports/knip-report.json || node -e "process.exit(0)"`,
     prePush: { name: "dead-code-check", run: check },
   };
 }
@@ -36,74 +37,48 @@ export function configureKnip({ targetDir, projectType, runCmd }) {
 export function parseKnipReport() {
   const reportPath = join(process.cwd(), ".reports/knip-report.json");
   if (!existsSync(reportPath)) {
-    console.error(
-      "❌ Report file .reports/knip-report.json not found. Generate the reports first.",
-    );
-    process.exit(1);
+    console.error("Report file .reports/knip-report.json not found. Generate the reports first.");
+    process.exitCode = 1;
+    return;
   }
   try {
-    const rawData = readFileSync(reportPath, "utf-8");
-    const data = JSON.parse(rawData);
-    console.log("\n📊 --- DEAD CODE ANALYSIS SUMMARY ---");
-    let totalUnusedFiles = 0;
-    let totalUnusedExports = 0;
-    let totalWastedBytes = 0;
-    const filesTable = [];
-
-    if (data.files && data.files.length > 0) {
-      totalUnusedFiles = data.files.length;
-      for (const file of data.files) {
-        let sizeText = "unknown";
-        if (existsSync(file)) {
-          const stats = statSync(file);
-          totalWastedBytes += stats.size;
-          sizeText = `${(stats.size / 1024).toFixed(2)} KB`;
-        }
-        filesTable.push({
-          Type: "📁 File",
-          "Name / Path": file,
-          Size: sizeText,
-        });
-      }
+    const data = JSON.parse(readFileSync(reportPath, "utf8"));
+    const summary = inspectKnip(data);
+    console.log("\nKNIP ANALYSIS SUMMARY");
+    let totalBytes = 0;
+    for (const file of data.files) {
+      console.log(`File: ${file}`);
+      if (existsSync(file)) totalBytes += statSync(file).size;
     }
-
-    if (data.issues) {
-      const issueTypes = ["exports", "types", "nsExports"];
-      for (const issue of data.issues) {
-        for (const type of issueTypes) {
-          if (issue[type]) {
-            const items = issue[type];
-            totalUnusedExports += items.length;
-            items.forEach((item) => {
-              filesTable.push({
-                Type: `❌ Export (${type})`,
-                "Name / Path": `${issue.file} -> export { ${item.name} }`,
-                Size: "-",
-              });
-            });
-          }
+    // Print native category values intact, including member/duplicate grouping
+    // and all available positions. This is not a normalized findings schema.
+    for (const issue of data.issues) {
+      console.log(`\n${issue.file}`);
+      for (const [category, items] of Object.entries(issue)) {
+        if (category !== "file" && items != null && Object.keys(Object(items)).length) {
+          console.log(`${category}: ${JSON.stringify(items, null, 2)}`);
         }
       }
     }
-
-    if (filesTable.length === 0) {
-      console.log("✨ Great! No dead code or unused files found.");
-    } else {
-      console.table(filesTable);
-      console.log("\n📉 TOTAL IMPACT:");
-      console.log(`   • Unused files: ${totalUnusedFiles}`);
-      console.log(`   • Unused exports/types: ${totalUnusedExports}`);
-      if (totalWastedBytes > 0) {
-        console.log(
-          `   • Wasted disk space: ${(totalWastedBytes / 1024).toFixed(2)} KB`,
-        );
-      }
-      console.log(
-        "\n💡 Tip: Remove these files and exports to reduce project size and speed up builds.",
-      );
+    for (const category of summary.unknown) {
+      if (Object.hasOwn(data, category)) console.log(`${category}: ${JSON.stringify(data[category], null, 2)}`);
+    }
+    console.log(`\nUnused files: ${summary.counts.files}`);
+    console.log(`Unused exports/types: ${["exports", "types", "nsExports", "nsTypes"].reduce((sum, key) => sum + (summary.counts[key] ?? 0), 0)}`);
+    for (const [category, count] of Object.entries(summary.counts)) {
+      if (category !== "files" && count) console.log(`${category}: ${count}`);
+    }
+    if (totalBytes) console.log(`Wasted disk space: ${(totalBytes / 1024).toFixed(2)} KB`);
+    if (summary.unknown.length) {
+      console.warn(`Incomplete interpretation; unknown categories: ${summary.unknown.join(", ")}. Read the native report.`);
+    } else if (summary.findingsCount === 0) {
+      console.log("No Knip findings.");
+    }
+    if (summary.findingsCount > 0 || summary.unknown.length) {
+      console.log("Review these findings and verify actual usage before removing code or dependencies.");
     }
   } catch (error) {
-    console.error("❌ Error reading or parsing the report:", error);
+    console.error("Error reading or parsing the report:", error.message);
     process.exitCode = 1;
   }
 }

@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
-import { initialize, packKit, runNpm, useLocalReportParser } from "./cli.js";
+import { initialize, packKit, runNpm, useLocalReportCommands } from "./cli.js";
 
 test("the packed kit works with real tools and Git hooks", async (t) => {
   const packedRoot = packKit(t);
@@ -62,7 +62,7 @@ test("the packed kit works with real tools and Git hooks", async (t) => {
         const script = (name, success = true) =>
           check(
             runtime === "node"
-              ? runNpm(["run", name], project)
+              ? runNpm(["run", "--silent", name], project)
               : spawnSync("bun", ["run", name], project),
             success,
           );
@@ -74,9 +74,10 @@ test("the packed kit works with real tools and Git hooks", async (t) => {
             version: "1.0.0",
             private: true,
             type: "module",
+            ...(language === "ts" ? { scripts: { typecheck: 'tsc --noEmit -p "tsconfig приложение.json"' } } : {}),
           }),
         );
-        writeFileSync(join(cwd, ".gitignore"), "node_modules/\n.reports/\n");
+        writeFileSync(join(cwd, ".gitignore"), "node_modules/\n");
         const sourcePath = join(cwd, `index.${language}`);
         writeFileSync(
           sourcePath,
@@ -96,6 +97,7 @@ test("the packed kit works with real tools and Git hooks", async (t) => {
               include: ["*.ts"],
             }),
           );
+          writeFileSync(join(cwd, "tsconfig приложение.json"), JSON.stringify({ extends: "./tsconfig.json" }));
         }
         git(["init", "--quiet"]);
         git(["config", "user.name", "Quality Kit Test"]);
@@ -124,7 +126,7 @@ test("the packed kit works with real tools and Git hooks", async (t) => {
         for (const directory of [".agents", ".claude"]) {
           assert.ok(
             existsSync(
-              join(cwd, directory, "skills/js-ts-quality-checks/SKILL.md"),
+              join(cwd, directory, "skills/js-ts-quality-checker/SKILL.md"),
             ),
           );
         }
@@ -133,8 +135,16 @@ test("the packed kit works with real tools and Git hooks", async (t) => {
         }
         const pkg = JSON.parse(readFileSync(pkgPath));
         assert.equal(pkg.scripts["security-check"], undefined);
-        useLocalReportParser(pkg, packedCli);
+        useLocalReportCommands(pkg, packedCli);
         writeFileSync(pkgPath, JSON.stringify(pkg));
+
+        const originalSource = readFileSync(sourcePath, "utf8");
+        script("report", false);
+        const beforeFixes = JSON.parse(script("report:agent", false).stdout);
+        assert.equal(beforeFixes.exitCode, 1);
+        assert.equal(beforeFixes.complete, true);
+        assert.equal(readFileSync(sourcePath, "utf8"), originalSource);
+        assert.doesNotMatch(readFileSync(sourcePath, "utf8"), /SPDX-/);
 
         script("license:fix");
         assert.match(
@@ -146,6 +156,20 @@ test("the packed kit works with real tools and Git hooks", async (t) => {
         script("dead-code");
         if (language === "ts") script("typecheck");
         script("validate");
+        // These files would cause findings if the generated exclusions failed.
+        writeFileSync(join(cwd, ".reports/unused.js"), "const = ;\n");
+        let cleanReport;
+        for (const name of ["report", "report:agent"]) {
+          const output = script(name);
+          const summary = JSON.parse(readFileSync(join(cwd, ".reports/report.json")));
+          assert.equal(summary.exitCode, 0, JSON.stringify(summary));
+          assert.equal(summary.complete, true);
+          if (cleanReport) assert.deepEqual(summary.checks, cleanReport.checks);
+          cleanReport = summary;
+          if (name === "report:agent") assert.deepEqual(JSON.parse(output.stdout), summary);
+        }
+        assert.ok(cleanReport.checks.filter((check) => check.status === "completed").every((check) => check.version !== null));
+        writeFileSync(join(cwd, ".gitignore"), "node_modules/\n.reports/\n");
 
         if (runtime === "node" && language === "js") {
           const knipRoot = join(cwd, "node_modules/knip");
@@ -300,6 +324,11 @@ test("the packed kit works with real tools and Git hooks", async (t) => {
           );
           script("lint:fix");
           script("typecheck", false);
+          const typed = JSON.parse(script("report:agent", false).stdout);
+          assert.equal(typed.exitCode, 1);
+          assert.equal(typed.checks[1].exitCode, 2);
+          assert.equal(typed.checks[1].status, "completed");
+          assert.match(typed.checks[1].command, /-p "tsconfig приложение.json"/);
           git(["add", "."]);
           git(["commit", "--quiet", "-m", "Invalid type"]);
           const rejectedTypes = git(
@@ -313,17 +342,37 @@ test("the packed kit works with real tools and Git hooks", async (t) => {
         }
         writeFileSync(sourcePath, cleanSource + "debugger;\n");
         script("lint", false);
-        for (let attempt = 0; attempt < 2; attempt++) {
-          const report = script("report");
-          assert.match(report.stdout, /Unused files:/);
-          assert.ok(existsSync(join(cwd, ".reports/biome-report.txt")));
+        let previous;
+        const sourceBeforeReports = readFileSync(sourcePath, "utf8");
+        for (const name of ["report", "report:agent"]) {
+          const output = script(name, false);
+          const report = JSON.parse(readFileSync(join(cwd, ".reports/report.json")));
+          assert.equal(report.exitCode, 1, JSON.stringify(report));
+          assert.equal(report.complete, true);
+          if (name === "report:agent") assert.deepEqual(JSON.parse(output.stdout), report);
+          if (previous) assert.deepEqual(report.checks, previous.checks);
+          previous = report;
+          assert.ok(existsSync(join(cwd, ".reports/biome-report.json")));
           const knip = JSON.parse(
             readFileSync(join(cwd, ".reports/knip-report.json")),
           );
           assert.ok(
             knip.files.some((file) => file.endsWith(`unused.${language}`)),
           );
+          assert.equal(readFileSync(sourcePath, "utf8"), sourceBeforeReports);
         }
+        // Unknown commands must keep the selected package manager's semantics.
+        const customPkg = JSON.parse(readFileSync(pkgPath));
+        customPkg.scripts.typecheck = 'node -e "console.log(123)" && node -e "console.error(456); process.exit(7)"';
+        writeFileSync(pkgPath, JSON.stringify(customPkg, null, 2));
+        const custom = JSON.parse(script("report:agent", false).stdout);
+        assert.equal(custom.exitCode, 2);
+        assert.equal(custom.checks[1].status, "partial");
+        assert.equal(custom.checks[1].findingsCount, null);
+        assert.equal(custom.checks[1].exitCode, 7);
+        assert.equal(readFileSync(join(cwd, custom.checks[1].stdoutPath), "utf8").trim(), "123");
+        assert.match(readFileSync(join(cwd, custom.checks[1].stderrPath), "utf8"), /456/);
+        assert.equal(custom.checks[2].status, "completed");
       });
     }
   }
