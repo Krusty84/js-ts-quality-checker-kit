@@ -11,7 +11,12 @@ for command in node npm git; do
   }
 done
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+  printf 'Interactive setup requires a terminal. Run this script in a terminal.\n' >&2
+  exit 1
+fi
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 playground="$root/playground"
 
 if [ -L "$playground" ] || [ ! -d "$playground/.git" ] || [ -L "$playground/.git" ]; then
@@ -43,3 +48,7 @@ rm -f "$playground/.git/hooks/pre-commit" "$playground/.git/hooks/pre-push"
 
 cp "$temporary/$archive" "$playground/$archive"
 printf 'Package ready: %s/%s\n' "$playground" "$archive"
+
+cd "$playground"
+npm install --save-dev -- "$playground/$archive"
+node ./node_modules/js-ts-quality-checker-kit/main.js
